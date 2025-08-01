@@ -1,0 +1,623 @@
+---
+title: "R Programming Sample"
+author: "Anumita Jain"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+
+# Introduction
+
+Welcome to my R programming sample!
+
+In this program, I evaluate the effects of NYC's Pre-K for All program, started in the Fall of 2014, on educational outcomes. I will be employing a difference-in-differences approach to answer my questions, using open source NY state test score data to look at the difference in grades 3-8 ELA and math test scores between students who started 3rd grade without having access to free pre-k (2015 - 2017) and students who started 3rd grade having had access to free pre-k (2018-2019). I stop my analysis at 2019 because the effects of the Covid-19 pandemic on educational outcomes would have been a huge confounding variable.
+
+I will quality check, modify, merge, visualize, and model open source NY state test score data data to answer my questions of 1) whether there is a statistically significant difference in test scores before and after the advent of pre-K for all and 2) whether that difference differs from the difference seen in the state as a whole in that same time period.
+
+# Libraries
+
+```{r, message = F, warning = F}
+
+library(tidyverse)      # for general programming
+library(tigris)         # for school zone shapefiles
+library(sf)             # for working with spatial data
+library(ggplot2)        # for data visualizations
+library(tmap)           # for map visualizations
+
+```
+
+
+# Import data
+
+## Test score data
+
+```{r, message = FALSE}
+
+# 2015-16
+scores_2015_16 <- read_csv("3-8_ELA_AND_MATH_RESEARCHER_FILE_2016.csv")
+scores_2015_16 %>% glimpse()
+
+# 2016-17
+scores_2016_17 <- read_csv("3-8_ELA_AND_MATH_RESEARCHER_FILE_2017.csv")
+scores_2016_17 %>% glimpse()
+
+# 2017-18
+scores_2017_18 <- read_csv("3-8_ELA_AND_MATH_RESEARCHER_FILE_2018.csv")
+scores_2017_18 %>% glimpse()
+
+# 2018-19
+scores_2018_19 <- read_csv("3-8_ELA_AND_MATH_RESEARCHER_FILE_2019.csv")
+scores_2018_19 %>% glimpse()
+
+```
+
+
+## School zones shapefile
+
+In order to create maps later on, I need to read in spatial data of each elementary school's zone, which I retrieved from NYC Open Data.
+
+```{r}
+
+zones <- st_read("geo_export_ede36ca7-7cf5-4f8c-aa2b-368d6822b457.shp")
+zones %>% glimpse()
+
+```
+
+
+## School location shapefile
+
+Because the school zone data above doesn't have names associated with it, I also need to read in school point location data that I can then spatially merge with the school zone data to assign a BEDS code to each school zone so that I can merge this spatial data to the numerical test score data.
+
+```{r}
+
+school_locations <- read_csv("2017_-_2018_School_Locations_20250730.csv")
+school_locations %>% glimpse()
+
+```
+
+
+# Data quality check
+
+## 2015-16 Data
+
+This dataset contains state test scores for ELA and math in the 2015-16 school year, broken up by county, school, grade, subject area, and various demographic subgroups.
+
+```{r}
+
+# Check for full duplicates
+scores_2015_16 %>% 
+  group_by_all() %>%
+  filter(n()>1) # 0 rows
+
+# Check for partial duplicates on school/county name, grade/subject, and subgroup name
+scores_2015_16 %>%
+  group_by(NRC_DESC, COUNTY_DESC, NAME, ITEM_DESC, SUBGROUP_NAME) %>% 
+  filter(n()>1)# 0 rows
+
+# Check for missingness across all columns
+colSums(is.na(scores_2015_16))
+
+```
+
+There are quite a few partial duplicates that I will look into.
+
+```{r}
+
+# Check for partial duplicates on school/county name, grade/subject, and subgroup name
+scores_2015_16 %>%
+  group_by(NRC_DESC, COUNTY_DESC, NAME, ITEM_DESC, SUBGROUP_NAME) %>% 
+  filter(n()>1) %>%
+  arrange(NRC_DESC, COUNTY_DESC, NAME, ITEM_DESC, SUBGROUP_NAME)
+
+```
+
+
+All of these cases are in one school in Nassau County that has two different BEDS (Basic Educational Data System) codes. Since Nassau County is outside of New York City, it will not be a part of my analysis so I will not look into this further.
+
+There were also quite a few rows with missing counties. I will look at these cases.
+
+```{r}
+
+scores_2015_16 %>% filter(is.na(COUNTY_CODE) | is.na(COUNTY_DESC)) %>% count(NAME)
+
+```
+
+For all of these cases, it makes sense not to have a county code/name.
+
+
+## 2016-17 Data
+
+This dataset contains state test scores for ELA and math in the 2016-17 school year, broken up by county, school, grade, subject area, and various demographic subgroups.
+
+```{r}
+
+# Check for full duplicates
+scores_2016_17 %>% 
+  group_by_all() %>%
+  filter(n()>1) # 0 rows
+
+# Check for partial duplicates on school/county name, grade/subject, and subgroup name
+scores_2016_17 %>%
+  group_by(NRC_DESC, COUNTY_DESC, NAME, ITEM_DESC, SUBGROUP_NAME) %>% 
+  filter(n()>1) # 0 rows
+
+# Check for missingness across all columns
+colSums(is.na(scores_2016_17))
+
+```
+
+Everything looks good here but I will once again check in on the county missingness situation.
+
+```{r}
+
+scores_2016_17 %>% filter(is.na(COUNTY_CODE) | is.na(COUNTY_DESC)) %>% count(NAME)
+
+```
+
+It's the same situation as earlier, and there is no cause for concern.
+
+## 2017-18 Data
+
+This dataset contains state test scores for ELA and math in the 2017-18 school year, broken up by county, school, grade, subject area, and various demographic subgroups.
+
+```{r}
+
+# Check for full duplicates
+scores_2017_18 %>% 
+  group_by_all() %>%
+  filter(n()>1) # 0 rows
+
+# Check for partial duplicates on school/county name, grade/subject, and subgroup name
+scores_2017_18 %>%
+  group_by(NRC_DESC, COUNTY_DESC, NAME, ITEM_DESC, SUBGROUP_NAME) %>% 
+  filter(n()>1) # 0 rows
+
+# Check for missingness across all columns
+colSums(is.na(scores_2017_18))
+
+```
+
+Everything looks good here but I will once again check in on the county missingness situation.
+
+```{r}
+
+scores_2017_18 %>% filter(is.na(COUNTY_CODE) | is.na(COUNTY_DESC)) %>% count(NAME)
+
+```
+
+It's the same situation as earlier, and there is no cause for concern.
+
+
+## 2018-19 Data
+
+This dataset contains state test scores for ELA and math in the 2018-19 school year, broken up by county, school, grade, subject area, and various demographic subgroups.
+
+```{r}
+
+# Check for full duplicates
+scores_2018_19 %>% 
+  group_by_all() %>%
+  filter(n()>1) # 0 rows
+
+# Check for partial duplicates on school/county name, grade/subject, and subgroup name
+scores_2018_19 %>%
+  group_by(NRC_DESC, COUNTY_DESC, NAME, ITEM_DESC, SUBGROUP_NAME) %>% 
+  filter(n()>1) # 0 rows
+
+# Check for missingness across all columns
+colSums(is.na(scores_2018_19))
+
+```
+
+Everything looks good here but I will once again check in on the county missingness situation.
+
+```{r}
+
+scores_2018_19 %>% filter(is.na(COUNTY_CODE) | is.na(COUNTY_DESC)) %>% count(NAME)
+
+```
+
+It's the same situation as earlier, and there is no cause for concern.
+
+
+## School zone spatial data
+
+```{r}
+# Check for full duplicates
+zones %>% 
+  group_by_all() %>%
+  filter(n()>1) # 0 rows
+
+# Check for partial duplicates on internal ID number
+zones %>%
+  group_by(esid_no) %>% 
+  filter(n()>1) # 0 rows
+
+# Check for missingness across all columns
+colSums(is.na(zones))
+
+```
+
+There is no missingness in geometry, which is the only variable I'll be using.
+
+
+## School location data
+
+```{r}
+# Check for full duplicates
+school_locations %>% 
+  group_by_all() %>%
+  filter(n()>1) # 0 rows
+
+# Check for partial duplicates on BEDS code
+school_locations %>%
+  group_by(`BEDS NUMBER`) %>% 
+  filter(n()>1) # 0 rows
+
+# Check for missingness across all columns
+colSums(is.na(school_locations))
+
+```
+
+The only variables I will be using from this dataset are BEDS code (0 missing rows) and location (1 missing row). I'm going to look into the one row that's missing its location.
+
+```{r}
+
+school_locations %>% filter(is.na(`Location 1`))
+
+```
+
+A quick Google search reveals that this school (and its listed address) is located in Syosset, NY, outside of NYC city limits. Because it is not a part of my analysis, I will ignore this.
+
+# Prepare data for analysis
+
+## Subset test score data to NYC and 3rd grade
+
+Since my analysis is focused on New York City and this data includes schools statewide, I will now subset the data to only include rows involving New York City (as well as rows pertaining to the entire state, for the difference-in-differences evaluation later). In addition, I will only be looking at 3rd grade test scores as that is the only grade that will have had access to Pre-K for All in the final year I am looking at in this analysis (2018-19 school year).
+
+```{r}
+
+# 2015-16
+nyc_2015_16 <- scores_2015_16 %>% 
+  
+  # filter to NYC and NY state whole population
+  filter(NAME == "NRC - NYC" | NAME == "STATEWIDE - ALL DISTRICTS AND CHARTERS" | COUNTY_DESC=="NEW YORK" | COUNTY_DESC=="KINGS" | COUNTY_DESC=="QUEENS" | COUNTY_DESC=="BRONX" | COUNTY_DESC=="RICHMOND") %>% 
+  
+  # filter to 3rd grade
+  filter(grepl("Grade 3", ITEM_DESC))
+
+# check county names
+nyc_2015_16 %>% count(COUNTY_DESC)
+nyc_2015_16 %>% filter(is.na(COUNTY_DESC)) %>% count(NAME)
+# check grades
+nyc_2015_16 %>% count(ITEM_DESC)
+
+
+# 2016-17
+nyc_2016_17 <- scores_2016_17 %>% 
+  
+  # filter to NYC and NY state whole population
+  filter(NAME == "NRC - NYC" | NAME == "STATEWIDE - ALL DISTRICTS AND CHARTERS" | COUNTY_DESC=="NEW YORK" | COUNTY_DESC=="KINGS" | COUNTY_DESC=="QUEENS" | COUNTY_DESC=="BRONX" | COUNTY_DESC=="RICHMOND") %>% 
+  
+  # filter to 3rd grade
+  filter(grepl("Grade 3", ITEM_DESC))
+
+# check county names
+nyc_2016_17 %>% count(COUNTY_DESC)
+nyc_2016_17 %>% filter(is.na(COUNTY_DESC)) %>% count(NAME)
+# check grades
+nyc_2016_17 %>% count(ITEM_DESC)
+
+
+# 2017-18
+nyc_2017_18 <- scores_2017_18 %>% 
+  
+  # filter to NYC and NY state whole population
+  filter(NAME == "NRC - NYC" | NAME == "STATEWIDE - ALL DISTRICTS AND CHARTERS" | COUNTY_DESC=="NEW YORK" | COUNTY_DESC=="KINGS" | COUNTY_DESC=="QUEENS" | COUNTY_DESC=="BRONX" | COUNTY_DESC=="RICHMOND") %>% 
+  
+  # filter to 3rd grade
+  filter(grepl("Grade 3", ITEM_DESC))
+
+# check county names
+nyc_2017_18 %>% count(COUNTY_DESC)
+nyc_2017_18 %>% filter(is.na(COUNTY_DESC)) %>% count(NAME)
+# check grades
+nyc_2017_18 %>% count(ITEM_DESC)
+
+
+# 2018-19
+nyc_2018_19 <- scores_2018_19 %>% 
+  
+  # filter to NYC and NY state whole population
+  filter(NAME == "NRC - NYC" | NAME == "STATEWIDE - ALL DISTRICTS AND CHARTERS" | COUNTY_DESC=="NEW YORK" | COUNTY_DESC=="KINGS" | COUNTY_DESC=="QUEENS" | COUNTY_DESC=="BRONX" | COUNTY_DESC=="RICHMOND") %>% 
+  
+  # filter to 3rd grade
+  filter(grepl("Grade 3", ITEM_DESC)) %>%
+  
+  # add leading zeroes to BEDS code and subgroup code variables
+  mutate(BEDSCODE = case_when(NAME=="NEW YORK COUNTY" ~ "310000000000",
+                              TRUE ~ str_pad(BEDSCODE, width = 12, side = "left", pad = "0")),
+         SUBGROUP_CODE = str_pad(SUBGROUP_CODE, width = 2, side = "left", pad = "0"))
+
+# check county names
+nyc_2018_19 %>% count(COUNTY_DESC)
+nyc_2018_19 %>% filter(is.na(COUNTY_DESC)) %>% count(NAME)
+# check grades
+nyc_2018_19 %>% count(ITEM_DESC)
+
+```
+
+
+## Stack test score datasets
+
+I will now stack the four datasets to facilitate visualization and modeling later on.
+
+```{r}
+
+nyc_15t19 <- rbind(nyc_2015_16, nyc_2016_17, nyc_2017_18, nyc_2018_19)
+
+# check that row counts are as expected
+isTRUE(nyc_15t19 %>% nrow() == nyc_2015_16 %>% nrow() + nyc_2016_17 %>% nrow() + nyc_2017_18 %>% nrow() + nyc_2018_19 %>% nrow())
+
+# check that school year end dates make sense
+nyc_15t19 %>% count(SY_END_DATE)
+
+```
+
+
+## Pivot test score data
+
+I am going to pivot this dataset so that there is one column per year and variable for each unit (in this case a unit is the entire city, a county, or a school). 
+
+```{r}
+
+# select only relevant variables
+nyc_15t19_subset <- nyc_15t19 %>% 
+  
+  # select only relevant variables
+  select(SY_END_DATE, NRC_CODE, NRC_DESC, COUNTY_CODE, COUNTY_DESC, BEDSCODE, NAME, ITEM_SUBJECT_AREA, ITEM_DESC, SUBGROUP_CODE, SUBGROUP_NAME, L1_PCT, L2_PCT, L3_PCT, L4_PCT, `L3-L4_PCT`, MEAN_SCALE_SCORE) %>% 
+  
+  # convert variables to numeric
+  mutate(L1_PCT = as.numeric(gsub("%", "", L1_PCT)),
+         L2_PCT = as.numeric(gsub("%", "", L2_PCT)),
+         L3_PCT = as.numeric(gsub("%", "", L3_PCT)),
+         L4_PCT = as.numeric(gsub("%", "", L4_PCT)),
+         `L3-L4_PCT` = as.numeric(gsub("%", "", `L3-L4_PCT`)),
+         )
+
+# pivot
+nyc_15t19_pivot <- nyc_15t19_subset %>% pivot_wider(names_from = SY_END_DATE, values_from = c(L1_PCT, L2_PCT, L3_PCT, L4_PCT, `L3-L4_PCT`, MEAN_SCALE_SCORE))
+
+# peek at dataset
+nyc_15t19_pivot # looks good
+
+```
+
+
+## Merge school zone data with school location data
+
+### Prepare school location data for merge
+
+The school location data needs to be transformed into a simple features (sf) object. In order to do that, I need its coordinates which are buried in the "Location 1" variable. I'm first going to extract the coordinates from that variable.
+
+```{r}
+
+# create coordinate variables
+school_locations2 <- school_locations %>% mutate(
+  
+  # extracting string in parentheses
+  coordinates = str_extract(`Location 1`, "\\((.*?)\\)"),
+  
+  # extracting string between opening parenthesis and comma
+  latitude = str_extract(coordinates,"(?<=\\()[^,]+(?=,)"),
+  
+  # extracting string between comma and closing parenthesis
+  longitude = str_extract(coordinates, "(?<=,)\\s*([^)]*)\\)"),
+  # removing closing parenthesis and space from longitude
+  longitude = gsub(")", "", longitude),
+  longitude = gsub(" ", "", longitude)) %>%
+  
+  # get rid of row with missing coordinates
+  filter(!is.na(latitude) & !is.na(longitude) & latitude !="0.0")
+
+# check that coordinates look right
+range(school_locations2$latitude)
+range(school_locations2$longitude)
+
+
+# transform into an sf object
+school_locations_sf <- school_locations2 %>% st_as_sf(coords = c("longitude", "latitude"), crs = st_crs(zones))
+# make sure geometry is correct
+school_locations_sf <- sf::st_make_valid(school_locations_sf)
+
+```
+
+
+
+
+### Merge the spatial datasets
+
+```{r}
+
+# make sure zones geometry is correct
+zones <- st_make_valid(zones)
+
+# create "in" variables to check merge later
+zones2 <- zones %>% mutate(inZONES = 1)
+school_locations_sf2 <- school_locations_sf %>% mutate(inSCHOOL = 1)
+
+# merge
+spatial_merge <- zones2 %>% st_join(school_locations_sf2, left = TRUE)
+
+# check merge
+spatial_merge %>% count(inZONES, inSCHOOL)
+
+```
+
+
+## Merge the spatial data to the test score data
+
+```{r}
+
+# create "in" variables to check merge later
+spatial_merge2 <- spatial_merge %>% mutate(inSPATIAL = 1) %>% mutate(`BEDS NUMBER` = as.character(`BEDS NUMBER`))
+nyc_15t19_pivot2 <- nyc_15t19_pivot %>% mutate(inSCORE = 1)
+
+# merge on BEDS code variable
+spatial_scores <- spatial_merge2 %>% full_join(nyc_15t19_pivot2, by = c("BEDS NUMBER" = "BEDSCODE"))
+
+# check merge
+spatial_scores %>% count(inSPATIAL, inSCORE)
+
+```
+
+
+There are 2096 rows with BEDS codes that are in the test score data but not the spatial data--I'm going to take a look at them.
+
+
+```{r}
+
+spatial_scores %>% filter(is.na(inSPATIAL) & !is.na(inSCORE)) %>% count(NAME) %>% print(n = 50)
+
+```
+
+These are all charter schools (which don't have a zone) and non-school rows such as NYC as a whole or specific counties, so there is not really an issue.
+
+
+# Visualize
+
+NY state testing uses a 4-level system to classify test results: below standard (level 1), partially proficient (level 2), proficient (level 3), and exceeds proficiency (level 4). I'm going to start by looking at the percent of students that fall into level 3 or 4 over the four years I have data for.
+
+## Percent of students that are proficient or exceeding proficiency over time
+
+```{r}
+
+# convert proficiency level variable to numeric
+nyc_15t19_numeric <- nyc_15t19 %>% mutate(L1_PCT = as.numeric(gsub("%", "", L1_PCT)),
+         L2_PCT = as.numeric(gsub("%", "", L2_PCT)),
+         L3_PCT = as.numeric(gsub("%", "", L3_PCT)),
+         L4_PCT = as.numeric(gsub("%", "", L4_PCT)),
+         `L3-L4_PCT` = as.numeric(gsub("%", "", `L3-L4_PCT`)),
+         )
+
+ggplot(
+  
+  # isolate dataset to NYC and grade 3
+  nyc_15t19_numeric %>% filter(NAME == "NRC - NYC" & SUBGROUP_NAME == "All Students" & grepl("Grade 3", ITEM_DESC)), 
+  
+  aes(x = SY_END_DATE, y = `L3-L4_PCT`, fill = ITEM_DESC)) + geom_bar(stat = "identity", position = "dodge") + labs (title = "Grade 3 ELA and Math Proficiency", subtitle = "Percent of students who are proficient or higher over time") + xlab("School Year End Date") + ylab("Students scoring proficient or higher (%)") + guides(fill=guide_legend(title="Subject")) + theme_minimal()
+
+
+```
+
+Test score proficiency seems to be increasing over time. I'm now going to map the change between the 2015-16 school year and the 2018-19 school year in these two levels of proficiency.
+
+## Difference in proficiency from 2015-16 to 2018-19
+
+```{r}
+
+# create difference variable
+spatial_scores2 <- spatial_scores %>% 
+  
+  # convert l3-l4
+  
+  mutate(diff = `L3-L4_PCT_6/30/2019` - `L3-L4_PCT_06/30/2016`)
+
+# peek to make sure new variable was created correctly
+spatial_scores2 %>% select(`L3-L4_PCT_6/30/2019`, `L3-L4_PCT_06/30/2016`, diff)
+
+# create ela map
+ela_diff_map <- tm_shape(spatial_scores2 %>% filter(grepl("Grade 3 ELA", ITEM_DESC))) + tm_polygons(col = "diff", palette = "RdYlGn") + tm_title("Difference in Grade 3 ELA Proficiency: 2015-16 School Year to 2018-19 School Year")
+
+ela_diff_map
+
+
+# create math map
+math_diff_map <- tm_shape(spatial_scores2 %>% filter(grepl("Grade 3 Math", ITEM_DESC))) + tm_polygons(col = "diff", palette = "RdYlGn") + tm_title("Difference in Grade 3 Math Proficiency: 2015-16 School Year to 2018-19 School Year")
+
+math_diff_map
+
+```
+
+Both maps indicate an overall improvement over time across the board, with slightly more schools seeing an improvement in math scores than in ELA scores.
+
+Finally, I'm going to visualize the scores for NYC and the state as a whole.
+
+```{r}
+
+# ELA 
+ggplot(
+  
+  # isolate dataset to 2015-16 and 2018-19 school years, NYC, NY state, and Grade 3
+  nyc_15t19_numeric %>% filter(SY_END_DATE %in% c("06/30/2016", "6/30/2019") & NAME %in% c("NRC - NYC", "STATEWIDE - ALL DISTRICTS AND CHARTERS") & grepl("Grade 3 ELA", ITEM_DESC)), 
+  aes(x = NAME, y = `L3-L4_PCT`, fill = SY_END_DATE)) + geom_bar(stat = "identity", position = "dodge") + labs (title = "Grade 3 ELA Proficiency: NYC vs. New York State", subtitle = "Percent of students who are proficient or higher over time") + xlab("Geography") + ylab("Students scoring proficient or higher (%)") + guides(fill=guide_legend(title="School Year")) + theme_minimal()
+
+
+# Math 
+ggplot(
+  
+  # isolate dataset to 2015-16 and 2018-19 school years, NYC, NY state, and Grade 3
+  nyc_15t19_numeric %>% filter(SY_END_DATE %in% c("06/30/2016", "6/30/2019") & NAME %in% c("NRC - NYC", "STATEWIDE - ALL DISTRICTS AND CHARTERS") & grepl("Grade 3 Math", ITEM_DESC)), 
+  aes(x = NAME, y = `L3-L4_PCT`, fill = SY_END_DATE)) + geom_bar(stat = "identity", position = "dodge") + labs (title = "Grade 3 Math Proficiency: NYC vs. New York State", subtitle = "Percent of students who are proficient or higher over time") + xlab("Geography") + ylab("Students scoring proficient or higher (%)") + guides(fill=guide_legend(title="School Year")) + theme_minimal()
+
+
+```
+
+For both geographies, the difference over time seems pretty similar. I'll find out how it actually is in my difference-in-differences modeling below.
+
+# Model
+
+First, I'm going to conduct two t-tests to see if there's a meaningful difference in scores between the 2015-16 school year and the 2018-19 school year in ELA and math scores for 3rd graders in NYC.
+
+```{r}
+
+# create dataset for ela t-test
+ela_ttest_ds <- nyc_15t19_pivot %>% filter(NAME != "STATEWIDE - ALL DISTRICTS AND CHARTERS" & ITEM_DESC=="Grade 3 ELA")
+
+# run ela t-test
+ela_ttest <- t.test(ela_ttest_ds$`L3-L4_PCT_6/30/2019`, ela_ttest_ds$`L3-L4_PCT_06/30/2016`)
+
+# create dataset for math t-test
+math_ttest_ds <- nyc_15t19_pivot %>% filter(NAME != "STATEWIDE - ALL DISTRICTS AND CHARTERS" & ITEM_DESC=="Grade 3 Math")
+
+# run ela t-test
+math_ttest <- t.test(math_ttest_ds$`L3-L4_PCT_6/30/2019`, math_ttest_ds$`L3-L4_PCT_06/30/2016`)
+
+
+ela_ttest
+math_ttest
+
+```
+
+Both t-tests indicate a statistically significant difference in the percent of students who are proficient or above between the 2015-16 school year and the 2018-19 school year. However, this could be the result of a statewide trend. I'm next going to run a difference-in-differences regression to see if this same trend occurred in the state as a whole or if it's reasonable to conclude that these improved test scores are a result of Pre-K for All.
+
+```{r}
+
+# create a variable for treatment group (in this case, treatment group is NYC) and time variable (pre 2018 vs. post 2018)
+nyc_15t19_numeric2 <- nyc_15t19_numeric %>% 
+  mutate(treatment = ifelse(NAME == "STATEWIDE - ALL DISTRICTS AND CHARTERS", 0, 1),
+         time = ifelse(SY_END_DATE == "6/30/2019", 1, 0))
+
+# check creation of these variables
+nyc_15t19_numeric2 %>% count(treatment, NAME) %>% arrange(treatment)
+nyc_15t19_numeric2 %>% count(time, SY_END_DATE)
+
+# run regression
+did_regression <- lm(`L3-L4_PCT` ~ treatment*time, data = nyc_15t19_numeric2)
+
+summary(did_regression)
+
+```
+
+This regression model suggests that NYC's test score increase is not unique and cannot be attributed to Pre-K for all. 
